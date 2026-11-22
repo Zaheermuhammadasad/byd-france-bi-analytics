@@ -1,0 +1,138 @@
+// =====================================================================
+// BYD France BI · Power BI measures (DAX), 23 measures
+// Source of truth: docs/kpi_definitions.md (formulas copied unchanged).
+// How to use: in Power BI Desktop select the _Measures table > New measure,
+// then paste ONE block at a time (from the measure name down to the blank line).
+// Create them in this order, because later measures use earlier ones.
+// Updated 22 Nov 2026 (audit): prior-year measures read the period end from the
+// last date in context; rank uses ALL ( dim_brand ).
+// =====================================================================
+
+// ---------- K01 · Registrations ----------
+Registrations (month) =
+    SUM ( v_brand_month[registrations_month] )
+
+Registrations (period) =
+-- CCFA published YTD at the last month in the current date filter
+    CALCULATE ( SUM ( v_brand_month[registrations_ytd] ), LASTDATE ( dim_date[date_key] ) )
+
+// ---------- K02 · Market registrations ----------
+Market registrations (month) =
+    SUM ( v_market_month[market_registrations_month] )
+
+Market registrations (period) =
+    CALCULATE ( SUM ( v_market_month[market_registrations_ytd] ), LASTDATE ( dim_date[date_key] ) )
+
+// ---------- K03 · Market share ----------
+Market share % (period) =
+    DIVIDE ( [Registrations (period)], [Market registrations (period)] )
+
+Market share % (month) =
+    DIVIDE ( [Registrations (month)],  [Market registrations (month)] )
+
+// ---------- K04 · Registration growth vs same period last year ----------
+Registrations (same period LY) =
+VAR last_date = MAX ( dim_date[date_key] )   -- period end: Dec for a full year, Oct for 2026
+VAR y = YEAR ( last_date )
+VAR m = MONTH ( last_date )
+RETURN
+    CALCULATE ( [Registrations (period)],
+                REMOVEFILTERS ( dim_date ), dim_date[year] = y - 1, dim_date[month] = m )
+
+Growth % vs LY =
+VAR ratio = DIVIDE ( [Registrations (period)], [Registrations (same period LY)] )
+RETURN IF ( ISBLANK ( ratio ), BLANK (), ratio - 1 )   -- never "-100%" when last year is missing
+
+// ---------- K05 · Share change vs same period last year ----------
+Market share % (same period LY) =
+VAR last_date = MAX ( dim_date[date_key] )
+VAR y = YEAR ( last_date )
+VAR m = MONTH ( last_date )
+VAR mkt_ly = CALCULATE ( [Market registrations (period)],
+                         REMOVEFILTERS ( dim_date ), dim_date[year] = y - 1, dim_date[month] = m )
+RETURN DIVIDE ( [Registrations (same period LY)], mkt_ly )
+
+Share change pp vs LY =
+VAR cur  = [Market share % (period)]
+VAR prev = [Market share % (same period LY)]
+RETURN IF ( ISBLANK ( cur ) || ISBLANK ( prev ), BLANK (), ( cur - prev ) * 100 )
+
+// ---------- K06 · Rank in market ----------
+Rank (period) =
+VAR cur = [Registrations (period)]
+RETURN
+IF ( NOT HASONEVALUE ( dim_brand[brand] )
+     || ISBLANK ( cur )
+     || SELECTEDVALUE ( dim_brand[brand] ) = "Other brands (AUTRES)",
+     BLANK (),
+     RANKX ( FILTER ( ALL ( dim_brand ),
+                      dim_brand[brand] <> "Other brands (AUTRES)"
+                      && NOT ISBLANK ( [Registrations (period)] ) ),
+             [Registrations (period)], cur, DESC, SKIP ) )
+
+Brands ranked (period) =
+COUNTROWS ( FILTER ( ALL ( dim_brand ),
+                     dim_brand[brand] <> "Other brands (AUTRES)"
+                     && NOT ISBLANK ( [Registrations (period)] ) ) )
+
+// ---------- K07 · Volume gap to a competitor ----------
+Gap to Tesla (period) =
+VAR byd   = CALCULATE ( [Registrations (period)], REMOVEFILTERS ( dim_brand ), dim_brand[brand] = "BYD" )
+VAR comp  = CALCULATE ( [Registrations (period)], REMOVEFILTERS ( dim_brand ), dim_brand[brand] = "Tesla" )
+RETURN IF ( ISBLANK ( byd ) || ISBLANK ( comp ), BLANK (), byd - comp )
+
+Gap to MG (period) =
+VAR byd   = CALCULATE ( [Registrations (period)], REMOVEFILTERS ( dim_brand ), dim_brand[brand] = "BYD" )
+VAR comp  = CALCULATE ( [Registrations (period)], REMOVEFILTERS ( dim_brand ), dim_brand[brand] = "MG" )
+RETURN IF ( ISBLANK ( byd ) || ISBLANK ( comp ), BLANK (), byd - comp )
+
+// ---------- K08 · Months ahead of a competitor ----------
+Months ahead of Tesla =
+COUNTROWS (
+    FILTER ( VALUES ( dim_date[date_key] ),
+        VAR byd  = CALCULATE ( [Registrations (month)], REMOVEFILTERS ( dim_brand ), dim_brand[brand] = "BYD" )
+        VAR comp = CALCULATE ( [Registrations (month)], REMOVEFILTERS ( dim_brand ), dim_brand[brand] = "Tesla" )
+        RETURN NOT ISBLANK ( byd ) && NOT ISBLANK ( comp ) && byd > comp ) )
+
+Months ahead of MG =
+COUNTROWS (
+    FILTER ( VALUES ( dim_date[date_key] ),
+        VAR byd  = CALCULATE ( [Registrations (month)], REMOVEFILTERS ( dim_brand ), dim_brand[brand] = "BYD" )
+        VAR comp = CALCULATE ( [Registrations (month)], REMOVEFILTERS ( dim_brand ), dim_brand[brand] = "MG" )
+        RETURN NOT ISBLANK ( byd ) && NOT ISBLANK ( comp ) && byd > comp ) )
+
+// ---------- K09 · Peak monthly share ----------
+Peak monthly share % =
+    MAXX ( VALUES ( dim_date[date_key] ), [Market share % (month)] )
+
+Peak share month =
+CONCATENATEX ( TOPN ( 1, VALUES ( dim_date[period] ), [Market share % (month)], DESC ),
+               dim_date[period], ", " )
+
+// ---------- K10 · Chinese-owned share (lower and upper bound) ----------
+Chinese-owned share % (lower) =
+DIVIDE ( CALCULATE ( [Registrations (period)], REMOVEFILTERS ( dim_brand ), dim_brand[is_chinese_owned] = 1 ),
+         [Market registrations (period)] )
+
+Chinese-owned share % (upper) =
+DIVIDE ( CALCULATE ( [Registrations (period)], REMOVEFILTERS ( dim_brand ), dim_brand[is_chinese_owned] = 1 )
+         + CALCULATE ( [Registrations (period)], REMOVEFILTERS ( dim_brand ), dim_brand[brand] = "Other brands (AUTRES)" ),
+         [Market registrations (period)] )
+
+// ---------- K11 · BYD part of Chinese-owned volume ----------
+BYD part of Chinese-owned % =
+DIVIDE ( CALCULATE ( [Registrations (period)], REMOVEFILTERS ( dim_brand ), dim_brand[is_byd] = 1 ),
+         CALCULATE ( [Registrations (period)], REMOVEFILTERS ( dim_brand ), dim_brand[is_chinese_owned] = 1 ) )
+
+// ---------- K12 · Market growth and seasonality index ----------
+Market growth % vs LY =
+VAR last_date = MAX ( dim_date[date_key] )
+VAR y = YEAR ( last_date )
+VAR m = MONTH ( last_date )
+VAR prev = CALCULATE ( [Market registrations (period)], REMOVEFILTERS ( dim_date ),
+                       dim_date[year] = y - 1, dim_date[month] = m )
+VAR ratio = DIVIDE ( [Market registrations (period)], prev )
+RETURN IF ( ISBLANK ( ratio ), BLANK (), ratio - 1 )
+
+Seasonality index =
+    AVERAGE ( v_market_month[seasonality_index] )   -- blank for 2026 by design
