@@ -1,0 +1,9 @@
+# Source documents and extracted tables are NOT redistributed (CCFA reserves reproduction rights).
+# Rebuild them locally: python scripts/download_sources.py, then notebooks 01-02.
+data/raw/*.pdf
+data/processed/*.csv
+data/powerbi/*.csv
+*.part
+__pycache__/
+.ipynb_checkpoints/
+*.pbix.bak
